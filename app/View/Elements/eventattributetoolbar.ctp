@@ -1,12 +1,16 @@
 <?php
+    $eventId = (int) $event['Event']['id'];
+    if (!empty($this->passedArgs['correlation'])) {
+        $attributeFilter = 'correlation';
+    }
     $simple_filter_data = array(
         array(
             'id' => 'filter_all',
             'title' => __('Show all attributes'),
             'text' => __('All'),
-            'active' => $attributeFilter == 'all',
+            'active' => $attributeFilter === 'all',
             'onClick' => 'filterAttributes',
-            'onClickParams' => array('all', $target)
+            'onClickParams' => array('all')
         )
     );
     foreach ($typeGroups as $group) {
@@ -14,34 +18,34 @@
             'id' => 'filter_' . h($group),
             'title' => __('Only show %s related attributes', h($group)),
             'text' => Inflector::humanize($group),
-            'active' => $attributeFilter == $group,
+            'active' => $attributeFilter === $group,
             'onClick' => 'filterAttributes',
-            'onClickParams' => array($group, $target)
+            'onClickParams' => array($group)
         );
     }
     $simple_filter_data[] = array(
         'id' => 'filter_proposal',
         'title' => __('Only show proposals'),
         'text' => __('Proposal'),
-        'active' => $attributeFilter == 'proposal',
-        'onClick' => 'filterAttributes',
-        'onClickParams' => array('proposal', $event['Event']['id'])
+        'active' => $attributeFilter === 'proposal',
+        'onClick' => 'toggleBoolFilter',
+        'onClickParams' => array('proposal')
     );
     $simple_filter_data[] = array(
         'id' => 'filter_correlation',
         'title' => __('Only show correlating attributes'),
         'text' => __('Correlation'),
-        'active' => $attributeFilter == 'correlation',
+        'active' => $attributeFilter === 'correlation',
         'onClick' => 'filterAttributes',
-        'onClickParams' => array('correlation', $event['Event']['id'])
+        'onClickParams' => array('correlation'),
     );
     $simple_filter_data[] = array(
         'id' => 'filter_warning',
         'title' => __('Only show potentially false positive attributes'),
         'text' => __('Warning'),
-        'active' => $attributeFilter == 'warning',
+        'active' => $attributeFilter === 'warning',
         'onClick' => 'filterAttributes',
-        'onClickParams' => array('warning', $event['Event']['id'])
+        'onClickParams' => array('warning')
     );
     $data = array(
         'children' => array(
@@ -49,10 +53,10 @@
                 'children' => array(
                     array(
                         'id' => 'create-button',
-                        'title' => __('Add attribute'),
+                        'title' => $possibleAction === 'attribute' ? __('Add attribute') : __('Add proposal'),
                         'fa-icon' => 'plus',
-                        'onClick' => 'clickCreateButton',
-                        'onClickParams' => array($event['Event']['id'], $possibleAction)
+                        'class' => 'last modal-open',
+                        'url' => $baseurl . '/' . $possibleAction . 's/add/' . $eventId,
                     ),
                     array(
                         'id' => 'multi-edit-button',
@@ -60,15 +64,16 @@
                         'class' => 'mass-select hidden',
                         'fa-icon' => 'edit',
                         'onClick' => 'editSelectedAttributes',
-                        'onClickParams' => array($event['Event']['id'])
+                        'onClickParams' => array($eventId)
                     ),
                     array(
                         'id' => 'multi-tag-button',
                         'title' => __('Tag selected Attributes'),
                         'class' => 'mass-select hidden',
                         'fa-icon' => 'tag',
-                        'onClick' => 'popoverPopup',
-                        'onClickParams' => array('this', 'selected/attribute', 'tags', 'selectTaxonomy')
+                        'data' => [
+                            'popover-popup' => $baseurl . '/tags/selectTaxonomy/selected/attribute',
+                        ],
                     ),
                     array(
                         'id' => 'multi-galaxy-button',
@@ -76,8 +81,9 @@
                         'class' => 'mass-select hidden',
                         'fa-icon' => 'rebel',
                         'fa-source' => 'fab',
-                        'onClick' => 'popoverPopup',
-                        'onClickParams' => array('this', 'selected/attribute', 'galaxies', 'selectGalaxyNamespace')
+                        'data' => [
+                            'popover-popup' => $baseurl . '/galaxies/selectGalaxyNamespace/selected/attribute/eventid:' . $eventId,
+                        ],
                     ),
                     array(
                         'id' => 'group-into-object-button',
@@ -86,7 +92,7 @@
                         'fa-icon' => 'object-group',
                         'fa-source' => 'fa',
                         'onClick' => 'proposeObjectsFromSelectedAttributes',
-                        'onClickParams' => array('this', $event['Event']['id'])
+                        'onClickParams' => array('this', $eventId)
                     ),
                     array(
                         'id' => 'multi-delete-button',
@@ -94,15 +100,15 @@
                         'class' => 'mass-select hidden',
                         'fa-icon' => 'trash',
                         'onClick' => 'multiSelectAction',
-                        'onClickParams' => array($event['Event']['id'], 'deleteAttributes')
+                        'onClickParams' => array($eventId, 'deleteAttributes')
                     ),
                     array(
                         'id' => 'multi-accept-button',
                         'title' => __('Accept selected Proposals'),
                         'class' => 'mass-proposal-select hidden',
-                        'fa-icon' => 'check-circl',
+                        'fa-icon' => 'check-circle',
                         'onClick' => 'multiSelectAction',
-                        'onClickParams' => array($event['Event']['id'], 'acceptProposals')
+                        'onClickParams' => array($eventId, 'acceptProposals')
                     ),
                     array(
                         'id' => 'multi-discard-button',
@@ -110,7 +116,7 @@
                         'class' => 'mass-proposal-select hidden',
                         'fa-icon' => 'times',
                         'onClick' => 'multiSelectAction',
-                        'onClickParams' => array($event['Event']['id'], 'discardProposals')
+                        'onClickParams' => array($eventId, 'discardProposals')
                     ),
                     array(
                         'id' => 'multi-sighting-button',
@@ -128,7 +134,7 @@
                         'title' => __('Populate using a template'),
                         'fa-icon' => 'list',
                         'onClick' => 'getPopup',
-                        'onClickParams' => array($event['Event']['id'], 'templates', 'templateChoices'),
+                        'onClickParams' => array($eventId, 'templates', 'templateChoices'),
                         'requirement' => $mayModify
                     ),
                     array(
@@ -136,14 +142,14 @@
                         'title' => __('Populate using the freetext import tool'),
                         'fa-icon' => 'align-left',
                         'onClick' => 'getPopup',
-                        'onClickParams' => array($event['Event']['id'], 'events', 'freeTextImport')
+                        'onClickParams' => array($eventId, 'events', 'freeTextImport')
                     ),
                     array(
                         'id' => 'attribute-replace-button',
                         'title' => __('Replace all attributes of a category/type combination within the event'),
                         'fa-icon' => 'random',
                         'onClick' => 'getPopup',
-                        'onClickParams' => array($event['Event']['id'], 'attributes', 'attributeReplace'),
+                        'onClickParams' => array($eventId, 'attributes', 'attributeReplace'),
                         'requirement' => $mayModify
                     )
                 )
@@ -165,8 +171,8 @@
                         'text' => __('Deleted'),
                         'active' => $deleted,
                         'onClick' => 'toggleBoolFilter',
-                        'onClickParams' => array($urlHere, 'deleted'),
-                        'requirement' => ($me['Role']['perm_sync'] || $event['Orgc']['id'] == $me['org_id'])
+                        'onClickParams' => array('deleted'),
+                        'requirement' => $me['Role']['perm_sync'] || $event['Orgc']['id'] == $me['org_id']
                     ),
                     array(
                         'id' => 'show_attribute_decaying_score',
@@ -175,7 +181,16 @@
                         'text' => __('Decay score'),
                         'active' => $includeDecayScore,
                         'onClick' => 'toggleBoolFilter',
-                        'onClickParams' => array($urlHere, 'includeDecayScore')
+                        'onClickParams' => array('includeDecayScore')
+                    ),
+                    array(
+                        'id' => 'show_attribute_sightingdb',
+                        'title' => __('Show SightingDB lookup results'),
+                        'fa-icon' => 'binoculars',
+                        'text' => __('SightingDB'),
+                        'active' => empty($includeSightingdb) ? false : true,
+                        'onClick' => 'toggleBoolFilter',
+                        'onClickParams' => array('includeSightingdb')
                     ),
                     array(
                         'id' => 'show_attribute_context',
@@ -191,7 +206,7 @@
                         'text' => __('Related Tags'),
                         'active' => $includeRelatedTags,
                         'onClick' => 'toggleBoolFilter',
-                        'onClickParams' => array($urlHere, 'includeRelatedTags')
+                        'onClickParams' => array('includeRelatedTags')
                     ),
                     array(
                         'id' => 'advanced_filtering',
@@ -211,7 +226,6 @@
                         ),
                         'active' => $advancedFilteringActive,
                         'onClick' => 'triggerEventFilteringTool',
-                        'onClickParams' > array('this')
                     )
                 )
             ),
@@ -219,16 +233,15 @@
                 'type' => 'search',
                 'fa-icon' => 'search',
                 'placeholder' => __('Enter value to search'),
-                'data' => '',
+                'value' => isset($filters['searchFor']) ? $filters['searchFor'] : null,
                 'cancel' => array(
                     'fa-icon' => 'times',
                     'title' => __('Remove filters'),
                     'onClick' => 'filterAttributes',
-                    'onClickParams' => array('all', $event['Event']['id'])
+                    'onClickParams' => array('all')
                 )
             )
         )
     );
     echo $this->element('/genericElements/ListTopBar/scaffold', array('data' => $data));
     echo $this->element('/Events/View/eventFilteringQueryBuilder');
-?>

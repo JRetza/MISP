@@ -1,8 +1,8 @@
 pyzmq
 coveralls
 codecov
-stix == 1.2.0.6
-git+https://github.com/MISP/PyMISP.git#egg=pymisp
+stix
+pymisp
 requests-mock
 pip
 nose

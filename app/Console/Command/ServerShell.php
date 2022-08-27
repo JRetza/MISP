@@ -1,45 +1,113 @@
 <?php
 App::uses('Folder', 'Utility');
 App::uses('File', 'Utility');
+App::uses('BackgroundJobsTool', 'Tools');
 require_once 'AppShell.php';
+
+/**
+ * @property Job $Job
+ * @property Server $Server
+ * @property Feed $Feed
+ * @property User $User
+ */
 class ServerShell extends AppShell
 {
     public $uses = array('Server', 'Task', 'Job', 'User', 'Feed');
 
-    public function list() {
-        $res = ['servers'=>[]];
-
+    public function list()
+    {
         $servers = $this->Server->find('all', [
             'fields' => ['Server.id', 'Server.name', 'Server.url'],
             'recursive' => 0
         ]);
-        foreach ($servers as $server)
-            $res['servers'][] = $server['Server'];
-
-        echo json_encode($res) . PHP_EOL;
+        foreach ($servers as $server) {
+            echo sprintf(
+                '%sServer #%s :: %s :: %s',
+                PHP_EOL,
+                $server['Server']['id'],
+                $server['Server']['name'],
+                $server['Server']['url']
+            );
+        }
+        echo PHP_EOL;
     }
 
-    public function test() {
+    public function listServers()
+    {
+        $servers = $this->Server->find('all', [
+            'fields' => ['Server.id', 'Server.name', 'Server.url'],
+            'recursive' => 0
+        ]);
+        $res = ['servers' => array_column($servers, 'Server')];
+        echo $this->json($res) . PHP_EOL;
+    }
+
+    public function test()
+    {
         if (empty($this->args[0])) {
             die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Test'] . PHP_EOL);
         }
 
         $serverId = intval($this->args[0]);
-        $res = @$this->Server->runConnectionTest($serverId);
-        if (!empty($res['message']))
-            $res['message'] = json_decode($res['message']);
+        $server = $this->getServer($serverId);
 
-        echo json_encode($res) . PHP_EOL;
+        $res = $this->Server->runConnectionTest($server, false);
+        echo $this->json($res) . PHP_EOL;
     }
 
-    public function pull() {
-        if (empty($this->args[0]) || empty($this->args[1])) {
-            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['pull'] . PHP_EOL);
+    public function pullAll()
+    {
+        $this->ConfigLoad->execute();
+        if (empty($this->args[0])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['PullAll'] . PHP_EOL);
         }
+
         $userId = $this->args[0];
-        $user = $this->User->getAuthUser($userId);
-        if (empty($this->args[1])) die();
+        $user = $this->getUser($userId);
+
+        if (!empty($this->args[1])) {
+            $technique = $this->args[1];
+        } else {
+            $technique = 'full';
+        }
+
+        $servers = $this->Server->find('list', array(
+            'conditions' => array('Server.pull' => 1),
+            'recursive' => -1,
+            'order' => 'Server.priority',
+            'fields' => array('Server.id', 'Server.name'),
+        ));
+
+        foreach ($servers as $serverId => $serverName) {
+            $jobId = $this->Job->createJob($user, Job::WORKER_DEFAULT, 'pull', "Server: $serverId", 'Pulling.');
+            $backgroundJobId = $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::DEFAULT_QUEUE,
+                BackgroundJobsTool::CMD_SERVER,
+                [
+                    'pull',
+                    $user['id'],
+                    $serverId,
+                    $technique,
+                    $jobId,
+                ],
+                true,
+                $jobId
+            );
+
+            $this->out("Enqueued pulling from $serverName server as job $backgroundJobId");
+        }
+    }
+
+    public function pull()
+    {
+        if (empty($this->args[0]) || empty($this->args[1])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Pull'] . PHP_EOL);
+        }
+
+        $userId = $this->args[0];
+        $user = $this->getUser($userId);
         $serverId = $this->args[1];
+        $server = $this->getServer($serverId);
         if (!empty($this->args[2])) {
             $technique = $this->args[2];
         } else {
@@ -48,77 +116,59 @@ class ServerShell extends AppShell
         if (!empty($this->args[3])) {
             $jobId = $this->args[3];
         } else {
-            $this->Job->create();
-            $data = array(
-                    'worker' => 'default',
-                    'job_type' => 'pull',
-                    'job_input' => 'Server: ' . $serverId,
-                    'status' => 0,
-                    'retries' => 0,
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Pulling.',
-            );
-            $this->Job->save($data);
-            $jobId = $this->Job->id;
+            $jobId = $this->Job->createJob($user, Job::WORKER_DEFAULT, 'pull', 'Server: ' . $serverId, 'Pulling.');
         }
-        $this->Server->id = $serverId;
-        $server = $this->Server->read(null, $serverId);
-        $result = $this->Server->pull($user, $serverId, $technique, $server, $jobId);
-        $this->Job->id = $jobId;
-        $this->Job->save(array(
-                'id' => $jobId,
-                'message' => 'Job done.',
-                'progress' => 100,
-                'status' => 4
-        ));
-        if (is_array($result)) {
-            $message = sprintf(__('Pull completed. %s events pulled, %s events could not be pulled, %s proposals pulled.', count($result[0]), count($result[1]), $result[2]));
-        } else {
-            $message = sprintf(__('ERROR: %s'), $result);
+        $force = false;
+        if (!empty($this->args[4]) && $this->args[4] === 'force') {
+            $force = true;
         }
-        $this->Job->saveField('message', $message);
+        try {
+            $result = $this->Server->pull($user, $technique, $server, $jobId, $force);
+            if (is_array($result)) {
+                $message = __('Pull completed. %s events pulled, %s events could not be pulled, %s proposals pulled, %s sightings pulled, %s clusters pulled.', count($result[0]), count($result[1]), $result[2], $result[3], $result[4]);
+                $this->Job->saveStatus($jobId, true, $message);
+            } else {
+                $message = __('ERROR: %s', $result);
+                $this->Job->saveStatus($jobId, false, $message);
+            }
+        } catch (Exception $e) {
+            $this->Job->saveStatus($jobId, false, __('ERROR: %s', $e->getMessage()));
+            throw $e;
+        }
         echo $message . PHP_EOL;
     }
 
-    public function push() {
+    public function push()
+    {
         if (empty($this->args[0]) || empty($this->args[1])) {
-            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['push'] . PHP_EOL);
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Push'] . PHP_EOL);
         }
+
         $userId = $this->args[0];
-        $user = $this->User->getAuthUser($userId);
-        if (empty($user)) die('Invalid user.' . PHP_EOL);
+        $user = $this->getUser($userId);
         $serverId = $this->args[1];
-        if (!empty($this->args[2])) {
-            $jobId = $this->args[2];
+        $server = $this->getServer($serverId);
+        $technique = empty($this->args[2]) ? 'full' : $this->args[2];
+        if (!empty($this->args[3])) {
+            $jobId = $this->args[3];
         } else {
-            $this->Job->create();
-            $data = array(
-                    'worker' => 'default',
-                    'job_type' => 'push',
-                    'job_input' => 'Server: ' . $serverId,
-                    'status' => 0,
-                    'retries' => 0,
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Pushing.',
-            );
-            $this->Job->save($data);
-            $jobId = $this->Job->id;
+            $jobId = $this->Job->createJob($user, Job::WORKER_DEFAULT, 'push', 'Server: ' . $serverId, 'Pushing.');
         }
-        $technique = empty($this->args[3]) ? 'full' : $this->args[3];
         $this->Job->read(null, $jobId);
-        $server = $this->Server->read(null, $serverId);
+
         App::uses('SyncTool', 'Tools');
         $syncTool = new SyncTool();
         $HttpSocket = $syncTool->setupHttpSocket($server);
         $result = $this->Server->push($serverId, $technique, $jobId, $HttpSocket, $user);
-        $message = 'Job done.';
-        if ($result !== true && !is_array($result)) $message = 'Job failed. Reason: ' . $result;
-        $this->Job->save(array(
-                'id' => $jobId,
-                'message' => $message,
-                'progress' => 100,
-                'status' => 4
-        ));
+
+        if ($result !== true && !is_array($result)) {
+            $message = 'Job failed. Reason: ' . $result;
+            $this->Job->saveStatus($jobId, false, $message);
+        } else {
+            $message = 'Job done.';
+            $this->Job->saveStatus($jobId, true, $message);
+        }
+
         if (isset($this->args[4])) {
             $this->Task->id = $this->args[5];
             $message = 'Job(s) started at ' . date('d/m/Y - H:i:s') . '.';
@@ -127,58 +177,59 @@ class ServerShell extends AppShell
         }
     }
 
-
-    public function fetchFeed() {
-        if (empty($this->args[0]) || empty($this->args[1])) {
-            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['fetchFeed'] . PHP_EOL);
-        }
+    public function pushAll()
+    {
         $userId = $this->args[0];
-        $user = $this->User->getAuthUser($userId);
-        if (empty($user)) {
-            echo 'Invalid user.';
-            die();
+        $user = $this->getUser($userId);
+
+        $technique = isset($this->args[1]) ? $this->args[1] : 'full';
+
+        $servers = $this->Server->find('list', array(
+            'conditions' => array('Server.push' => 1),
+            'recursive' => -1,
+            'order' => 'Server.priority',
+            'fields' => array('Server.id', 'Server.name'),
+        ));
+
+        foreach ($servers as $serverId => $serverName) {
+            $jobId = $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::DEFAULT_QUEUE,
+                BackgroundJobsTool::CMD_SERVER,
+                [
+                    'push',
+                    $user['id'],
+                    $serverId,
+                    $technique
+                ]
+            );
+
+            $this->out("Enqueued pushing from $serverName server as job $jobId");
         }
+    }
+
+    public function fetchFeed()
+    {
+        if (empty($this->args[0]) || empty($this->args[1])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Fetch feeds as local data'] . PHP_EOL);
+        }
+
+        $userId = $this->args[0];
+        $user = $this->getUser($userId);
         $feedId = $this->args[1];
         if (!empty($this->args[2])) {
             $jobId = $this->args[2];
         } else {
-            $this->Job->create();
-            $data = array(
-                    'worker' => 'default',
-                    'job_type' => 'fetch_feeds',
-                    'job_input' => 'Feed: ' . $feedId,
-                    'status' => 0,
-                    'retries' => 0,
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Starting fetch from Feed.',
-            );
-            $this->Job->save($data);
-            $jobId = $this->Job->id;
+            $jobId = $this->Job->createJob($user, Job::WORKER_DEFAULT, 'fetch_feeds', 'Feed: ' . $feedId, 'Starting fetch from Feed.');
         }
-        $this->Job->read(null, $jobId);
-        $outcome = array(
-            'id' => $jobId,
-            'message' => 'Job done.',
-            'progress' => 100,
-            'status' => 4
-        );
-        if ($feedId == 'all') {
-            $feedIds = $this->Feed->find('list', array(
-                'fields' => array('Feed.id', 'Feed.id'),
+        if ($feedId === 'all') {
+            $feedIds = $this->Feed->find('column', array(
+                'fields' => array('Feed.id'),
                 'conditions' => array('Feed.enabled' => 1)
             ));
-            $feedIds = array_values($feedIds);
             $successes = 0;
             $fails = 0;
             foreach ($feedIds as $k => $feedId) {
-                $jobStatus = array(
-                    'id' => $jobId,
-                    'message' => 'Fetching feed: ' . $feedId,
-                    'progress' => 100 * $k / count($feedIds),
-                    'status' => 0
-                );
-                $this->Job->id = $jobId;
-                $this->Job->save($jobStatus);
+                $this->Job->saveProgress($jobId, 'Fetching feed: ' . $feedId, 100 * $k / count($feedIds));
                 $result = $this->Feed->downloadFromFeedInitiator($feedId, $user);
                 if ($result) {
                     $successes++;
@@ -186,33 +237,39 @@ class ServerShell extends AppShell
                     $fails++;
                 }
             }
-            $outcome['message'] = 'Job done. ' . $successes . ' feeds pulled successfuly, ' . $fails . ' feeds could not be pulled.';
+            $message = 'Job done. ' . $successes . ' feeds pulled successfully, ' . $fails . ' feeds could not be pulled.';
+            $this->Job->saveStatus($jobId, true, $message);
+            echo $message . PHP_EOL;
         } else {
-            $temp = $this->Feed->find('first', array(
-                'fields' => array('Feed.id', 'Feed.id'),
-                'conditions' => array('Feed.enabled' => 1, 'Feed.id' => $feedId)
-            ));
-            if (!empty($temp)) {
+            $feedEnabled = $this->Feed->hasAny([
+                'Feed.enabled' => 1,
+                'Feed.id' => $feedId,
+            ]);
+            if ($feedEnabled) {
                 $result = $this->Feed->downloadFromFeedInitiator($feedId, $user, $jobId);
                 if (!$result) {
-                    $outcome['progress'] = 0;
-                    $outcome['status'] = 3;
-                    $outcome['message'] = 'Job failed.';
+                    $this->Job->saveStatus($jobId, false, 'Job failed. See error log for more details.');
+                    echo 'Job failed.' . PHP_EOL;
+                } else {
+                    $this->Job->saveStatus($jobId, true);
+                    echo 'Job done.' . PHP_EOL;
                 }
+            } else {
+                $message = "Feed with ID $feedId not found or not enabled.";
+                $this->Job->saveStatus($jobId, false, $message);
+                echo $message . PHP_EOL;
             }
         }
-        $this->Job->id = $jobId;
-        $this->Job->save($outcome);
-        echo $outcome['message'] . PHP_EOL;
     }
 
-    public function cacheServer() {
+    public function cacheServer()
+    {
         if (empty($this->args[0]) || empty($this->args[1])) {
-            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['cacheServer'] . PHP_EOL);
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Cache server'] . PHP_EOL);
         }
+
         $userId = $this->args[0];
-        $user = $this->User->getAuthUser($userId);
-        if (empty($user)) die('Invalid user.' . PHP_EOL);
+        $user = $this->getUser($userId);
         $scope = $this->args[1];
         if (!empty($this->args[2])) {
             $jobId = $this->args[2];
@@ -221,7 +278,7 @@ class ServerShell extends AppShell
             $data = array(
                     'worker' => 'default',
                     'job_type' => 'cache_servers',
-                    'job_input' => 'Server: ' . $id,
+                    'job_input' => 'Server: ' . $scope,
                     'status' => 0,
                     'retries' => 0,
                     'org' => $user['Organisation']['name'],
@@ -230,55 +287,58 @@ class ServerShell extends AppShell
             $this->Job->save($data);
             $jobId = $this->Job->id;
         }
-        $this->Job->read(null, $jobId);
         $result = $this->Server->cacheServerInitiator($user, $scope, $jobId);
-        $this->Job->id = $jobId;
         if ($result !== true) {
-            $message = 'Job Failed. Reason: ';
-            $this->Job->save(array(
-                    'id' => $jobId,
-                    'message' => $message . $result,
-                    'progress' => 0,
-                    'status' => 3
-            ));
+            $message = 'Job Failed. Reason: ' . $result;
+            $this->Job->saveStatus($jobId, false, $message);
         } else {
             $message = 'Job done.';
-            $this->Job->save(array(
-                    'id' => $jobId,
-                    'message' => $message,
-                    'progress' => 100,
-                    'status' => 4
-            ));
+            $this->Job->saveStatus($jobId, true, $message);
         }
         echo $message . PHP_EOL;
     }
 
-
-    public function cacheFeed() {
-        if (empty($this->args[0]) || empty($this->args[1])) {
-            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['cacheFeed'] . PHP_EOL);
-        }
+    public function cacheServerAll()
+    {
         $userId = $this->args[0];
-        $user = $this->User->getAuthUser($userId);
-        if (empty($user)) die('Invalid user.' . PHP_EOL);
+        $user = $this->getUser($userId);
+
+        $servers = $this->Server->find('list', array(
+            'conditions' => array('Server.pull' => 1),
+            'recursive' => -1,
+            'order' => 'Server.priority',
+            'fields' => array('Server.id', 'Server.name'),
+        ));
+
+        foreach ($servers as $serverId => $serverName) {
+            $jobId = $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::DEFAULT_QUEUE,
+                BackgroundJobsTool::CMD_SERVER,
+                [
+                    'cacheServer',
+                    $user['id'],
+                    $serverId
+                ]
+            );
+
+            $this->out("Enqueued cacheServer from $serverName server as job $jobId");
+        }
+    }
+
+    public function cacheFeed()
+    {
+        if (empty($this->args[0]) || empty($this->args[1])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Cache feeds for quick lookups'] . PHP_EOL);
+        }
+
+        $userId = $this->args[0];
+        $user = $this->getUser($userId);
         $scope = $this->args[1];
         if (!empty($this->args[2])) {
             $jobId = $this->args[2];
         } else {
-            $this->Job->create();
-            $data = array(
-                    'worker' => 'default',
-                    'job_type' => 'cache_feeds',
-                    'job_input' => 'Feed: ' . $scope,
-                    'status' => 0,
-                    'retries' => 0,
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Starting feed caching.',
-            );
-            $this->Job->save($data);
-            $jobId = $this->Job->id;
+            $jobId = $this->Job->createJob($user, Job::WORKER_DEFAULT, 'cache_feeds', 'Feed: ' . $scope, 'Starting feed caching.');
         }
-        $this->Job->read(null, $jobId);
         try {
             $result = $this->Feed->cacheFeedInitiator($user, $jobId, $scope);
         } catch (Exception $e) {
@@ -286,28 +346,32 @@ class ServerShell extends AppShell
             $result = false;
         }
 
-        $this->Job->id = $jobId;
-        if ($result !== true) {
-            $message = 'Job failed. See logs for more details.';
-            $this->Job->save(array(
-                    'id' => $jobId,
-                    'message' => $message,
-                    'progress' => 0,
-                    'status' => 3
-            ));
+        if ($result === false) {
+            $message = __('Job failed. See error logs for more details.');
+            $this->Job->saveStatus($jobId, false, $message);
+
         } else {
-            $message = 'Job done.';
-            $this->Job->save(array(
-                    'id' => $jobId,
-                    'message' => $message,
-                    'progress' => 100,
-                    'status' => 4
-            ));
+            $total = $result['successes'] + $result['fails'];
+            $message = __n(
+                '%s feed from %s cached. Failed: %s',
+                '%s feeds from %s cached. Failed: %s',
+                $result['successes'], $result['successes'], $total, $result['fails']
+            );
+            if ($result['fails'] > 0) {
+                $message .= ' ' . __('See error logs for more details.');
+            }
+            $this->Job->saveStatus($jobId, true, $message);
         }
         echo $message . PHP_EOL;
     }
 
-    public function enqueuePull() {
+    public function enqueuePull()
+    {
+        $this->ConfigLoad->execute();
+        if (empty($this->args[0]) || empty($this->args[1]) || empty($this->args[2])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Enqueue pull'] . PHP_EOL);
+        }
+
         $timestamp = $this->args[0];
         $userId = $this->args[1];
         $taskId = $this->args[2];
@@ -334,9 +398,7 @@ class ServerShell extends AppShell
             );
             $this->Job->save($data);
             $jobId = $this->Job->id;
-            App::uses('SyncTool', 'Tools');
-            $syncTool = new SyncTool();
-            $result = $this->Server->pull($user, $server['Server']['id'], 'full', $server, $jobId);
+            $result = $this->Server->pull($user, 'full', $server, $jobId);
             $this->Job->save(array(
                     'id' => $jobId,
                     'message' => 'Job done.',
@@ -366,7 +428,13 @@ class ServerShell extends AppShell
         $this->Task->saveField('message', count($servers) . ' job(s) completed at ' . date('d/m/Y - H:i:s') . '. Failed jobs: ' . $failCount . '/' . $count);
     }
 
-    public function enqueueFeedFetch() {
+    public function enqueueFeedFetch()
+    {
+        $this->ConfigLoad->execute();
+        if (empty($this->args[0]) || empty($this->args[1]) || empty($this->args[2])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Enqueue feed fetch'] . PHP_EOL);
+        }
+
         $timestamp = $this->args[0];
         $userId = $this->args[1];
         $taskId = $this->args[2];
@@ -410,7 +478,13 @@ class ServerShell extends AppShell
         $this->Task->saveField('message', count($feeds) . ' job(s) completed at ' . date('d/m/Y - H:i:s') . '. Failed jobs: ' . $failCount . '/' . count($feeds));
     }
 
-    public function enqueueFeedCache() {
+    public function enqueueFeedCache()
+    {
+        $this->ConfigLoad->execute();
+        if (empty($this->args[0]) || empty($this->args[1]) || empty($this->args[2])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Enqueue feed cache'] . PHP_EOL);
+        }
+
         $timestamp = $this->args[0];
         $userId = $this->args[1];
         $taskId = $this->args[2];
@@ -439,25 +513,35 @@ class ServerShell extends AppShell
             CakeLog::error($e->getMessage());
             $result = false;
         }
-        if ($result) {
-            $this->Job->save(array(
-                'message' => 'Job done.',
-                'progress' => 100,
-                'status' => 4
-            ));
+
+        if ($result === false) {
+            $message = __('Job failed. See error logs for more details.');
+            $this->Job->saveStatus($jobId, false, $message);
+
         } else {
-            $this->Job->save(array(
-                'message' => 'Job failed. See logs for more details.',
-                'progress' => 100,
-                'status' => 3,
-            ));
+            $total = $result['successes'] + $result['fails'];
+            $message = __n(
+                '%s feed from %s cached. Failed: %s',
+                '%s feeds from %s cached. Failed: %s',
+                $result['successes'], $total, $result['fails']
+            );
+            if ($result['fails'] > 0) {
+                $message .= ' ' . __('See error logs for more details.');
+            }
+            $this->Job->saveStatus($jobId, true, $message);
         }
 
         $this->Task->id = $task['Task']['id'];
         $this->Task->saveField('message', 'Job completed at ' . date('d/m/Y - H:i:s'));
     }
 
-    public function enqueuePush() {
+    public function enqueuePush()
+    {
+        $this->ConfigLoad->execute();
+        if (empty($this->args[0]) || empty($this->args[1]) || empty($this->args[2])) {
+            die('Usage: ' . $this->Server->command_line_functions['console_automation_tasks']['data']['Enqueue push'] . PHP_EOL);
+        }
+
         $timestamp = $this->args[0];
         $taskId = $this->args[1];
         $userId = $this->args[2];
@@ -488,10 +572,49 @@ class ServerShell extends AppShell
             App::uses('SyncTool', 'Tools');
             $syncTool = new SyncTool();
             $HttpSocket = $syncTool->setupHttpSocket($server);
-            $result = $this->Server->push($server['Server']['id'], 'full', $jobId, $HttpSocket, $user);
+            $this->Server->push($server['Server']['id'], 'full', $jobId, $HttpSocket, $user);
         }
         $this->Task->id = $task['Task']['id'];
         $this->Task->saveField('message', count($servers) . ' job(s) completed at ' . date('d/m/Y - H:i:s') . '.');
     }
 
+    /**
+     * @param int $userId
+     * @return array
+     */
+    private function getUser($userId)
+    {
+        $user = $this->User->getAuthUser($userId);
+        if (empty($user)) {
+            $this->error('User ID do not match an existing user.');
+        }
+        return $user;
+    }
+
+    /**
+     * @param int $serverId
+     * @return array
+     */
+    private function getServer($serverId)
+    {
+        $server = $this->Server->find('first', [
+            'conditions' => ['Server.id' => $serverId],
+            'recursive' => -1,
+        ]);
+        if (!$server) {
+            $this->error("Server with ID $serverId doesn't exists.");
+        }
+        return $server;
+    }
+
+    /**
+     * @return BackgroundJobsTool
+     */
+    private function getBackgroundJobsTool()
+    {
+        if (!isset($this->BackgroundJobsTool)) {
+            $this->BackgroundJobsTool = new BackgroundJobsTool(Configure::read('SimpleBackgroundJobs'));
+        }
+        return $this->BackgroundJobsTool;
+    }
 }

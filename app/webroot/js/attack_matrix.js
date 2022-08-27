@@ -60,7 +60,7 @@
 		});
 		$('.statistics_attack_matrix .matrix-interaction').off('click.interaction').on('click.interaction', function(event) {
 			var clusterId = $(this).attr('data-cluster-id');
-			window.location = '/galaxy_clusters/view/' + clusterId;
+			window.location = baseurl + '/galaxy_clusters/view/' + clusterId;
 		});
 		scoredCells.hover(function() { enteringScoredCell($(this), '.statistics_attack_matrix'); }, function() { leavingScoredCell('.statistics_attack_matrix'); });
 		$('.statistics_attack_matrix #checkbox_attackMatrix_showAll').off('click.showAll').on('click.showAll', function() { toggleAttackMatrixCells('.statistics_attack_matrix'); });
@@ -244,12 +244,15 @@
 
 	function makeTagging(tagIds) {
 		$('#GalaxyViewGalaxyMatrixForm #GalaxyTargetIds').val(JSON.stringify(tagIds));
+		if ($('#GalaxyAttributeIds').length > 0) {
+			$('#GalaxyAttributeIds').val(getSelected());
+		}
 		$('#GalaxyViewGalaxyMatrixForm').submit();
 	}
 
 	function filterEvent(tagName, tagId) {
 		$('#attributesFilterField').val(tagName);
-		filterAttributes('value', $('#attributesFilterField').data('eventid'));
+		filterAttributes('value');
 	}
 
 	function pickCell(cell, clusterId, recurseChosen) {

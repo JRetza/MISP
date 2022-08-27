@@ -17,32 +17,16 @@ class CommunitiesController extends AppController
 
     public function index()
     {
-        $paramsToHarvest = array('context', 'value');
-        foreach ($paramsToHarvest as $param) {
-            if (!empty($this->params['named'][$param])) {
-                ${$param} = $this->params['named'][$param];
-            } else if ($this->request->is('post') && !empty($this->request->data[$param])) {
-                ${$param} = trim($this->request->data[$param]);
-            } else if ($param === 'context') {
-                ${$param} = 'vetted';
-            }
-        }
-        $filterData = array(
-            'request' => $this->request,
-            'paramArray' => array('context', 'value'),
-            'named_params' => $this->params['named']
-        );
-        $exception = false;
-        $filters = $this->_harvestParameters($filterData, $exception);
+        $filters = $this->IndexFilter->harvestParameters(array('context', 'value'));
         if (empty($filters['context'])) {
             $filters['context'] = 'vetted';
         }
-        if (!empty($value)) {
-            $value = strtolower($value);
+        if (!empty($filters['value'])) {
+            $filters['value'] = strtolower($filters['value']);
         } else {
-            $value = false;
+            $filters['value'] = false;
         }
-        $community_list = $this->Community->getCommunityList($context, $value);
+        $community_list = $this->Community->getCommunityList($filters['context'], $filters['value']);
 
         //foreach ($community)
         if ($this->_isRest()) {
@@ -53,7 +37,6 @@ class CommunitiesController extends AppController
         $customPagination->truncateAndPaginate($community_list, $this->params, $this->modelClass, true);
         $this->set('community_list', $community_list);
         $this->set('context', $filters['context']);
-        $this->set('passedArgs', json_encode($this->passedArgs, true));
     }
 
     public function view($id)
@@ -163,7 +146,7 @@ Thank you in advance!',
             if (!empty(Configure::read('MISP.disable_emailing'))) {
                 $params['mock'] = 1;
             }
-            $result = $this->User->sendEmailExternal($this->Auth->user(), $params);
+            $result = $this->User->sendEmailExternal($params);
             $message = $result ? __('Request sent.') : __('Something went wrong and the request could not be sent.');
             if ($this->_isRest()) {
                 if ($result === true) {

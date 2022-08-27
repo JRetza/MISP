@@ -3,7 +3,7 @@ App::uses('AppModel', 'Model');
 
 class SharingGroupServer extends AppModel
 {
-    public $actsAs = array('Containable');
+    public $actsAs = array('AuditLog', 'Containable');
 
     public $belongsTo = array(
         'SharingGroup' => array(
@@ -87,45 +87,20 @@ class SharingGroupServer extends AppModel
     // This basically lists all SGs that allow everyone on the instance to see events tagged with it
     public function fetchAllAuthorised()
     {
-        $sgs = $this->find('all', array(
-                'conditions' => array('all_orgs' => 1, 'server_id' => 0),
-                'recursive' => -1,
-                'fields' => array('sharing_group_id'),
+        $sgs = $this->find('column', array(
+            'conditions' => array('all_orgs' => 1, 'server_id' => 0),
+            'fields' => array('SharingGroupServer.sharing_group_id'),
         ));
-        $ids = array();
-        foreach ($sgs as $sg) {
-            $ids[] = $sg['SharingGroupServer']['sharing_group_id'];
-        }
-        return $ids;
+        return $sgs;
     }
 
-    // pass a sharing group ID, returns true if it has an attached server object with "all_orgs" ticked
+    // pass a sharing group ID, returns true if it has the local server object attached with "all_orgs" set
     public function checkIfAuthorised($id)
     {
-        $sg = $this->find('first', array(
-                'conditions' => array('sharing_group_id' => $id, 'all_orgs' => 1),
-                'recursive' => -1,
-                'fields' => array('id'),
-        ));
-        if (!empty($sg)) {
-            return true;
-        }
-        return false;
-    }
-
-    public function fetchAllSGsForServer($server_id)
-    {
-        $sgs = $this->find('all', array(
-            'recursive' => -1,
-            'conditions' => array('server_id' => $server_id)
-        ));
-        if (empty($sgs)) {
-            return array();
-        }
-        $sgids = array();
-        foreach ($sgs as $temp) {
-            $sgids[] = $temp[$this->alias]['id'];
-        }
-        return $sgids;
+        return $this->hasAny([
+            'sharing_group_id' => $id,
+            'all_orgs' => 1,
+            'server_id' => 0
+        ]);
     }
 }
